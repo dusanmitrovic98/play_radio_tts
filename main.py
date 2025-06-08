@@ -3,8 +3,13 @@ import os
 from werkzeug.utils import secure_filename
 import asyncio
 import edge_tts
+from dotenv import load_dotenv
 
 app = Flask(__name__)
+
+# Load environment variables from .env file
+load_dotenv()
+PORT = int(os.getenv('PORT', 5002))
 
 MUSIC_FOLDER = 'tts'  # Updated to match actual folder
 current_song = None
@@ -56,4 +61,4 @@ def say():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(port=5002)
+    app.run(port=PORT)
