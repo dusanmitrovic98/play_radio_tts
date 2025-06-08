@@ -1,11 +1,11 @@
-from flask import Flask, send_from_directory, jsonify, request
+from flask import Flask, send_from_directory, jsonify, request, render_template
 import os
 from werkzeug.utils import secure_filename
 import asyncio
 import edge_tts
 from dotenv import load_dotenv
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='assets', static_url_path='/assets', template_folder='templates')
 
 # Load environment variables from .env file
 load_dotenv()
@@ -59,6 +59,10 @@ def say():
         return jsonify({'status': 'ok', 'audio_path': 'tts-latest.mp3'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/')
+def home():
+    return render_template('index.html')
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5002)))

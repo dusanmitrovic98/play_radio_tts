@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to SebastianTheButler Voice Service</title>
+    <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #181c20; color: #f5f5f5; margin: 0; padding: 0; }
+        .container { max-width: 600px; margin: 80px auto; background: #23272b; border-radius: 12px; box-shadow: 0 4px 24px #0002; padding: 40px 32px; text-align: center; }
+        h1 { font-size: 2.2em; margin-bottom: 0.5em; color: #6ec1e4; }
+        p { font-size: 1.2em; margin-bottom: 1.5em; }
+        .note { color: #b0b0b0; font-size: 0.95em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome to SebastianTheButler Voice Service</h1>
+        <p>This service provides text-to-speech streaming and playback.<br>
+        Use the API endpoints to generate and play voice messages.</p>
+        <div class="note">
+            <p>Try POSTing to <code>/say</code> with a JSON body:<br>
+            <code>{ "text": "Hello from Sebastian!" }</code></p>
+            <p>Or stream the latest voice at <code>/stream</code>.</p>
+        </div>
+    </div>
+</body>
+</html>
