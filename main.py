@@ -60,6 +60,19 @@ def say():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/update', methods=['POST'])
+def update():
+    import subprocess
+    try:
+        # Pull latest changes from git
+        result = subprocess.run(['git', 'pull'], capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)))
+        if result.returncode == 0:
+            return jsonify({'status': 'ok', 'output': result.stdout})
+        else:
+            return jsonify({'status': 'error', 'output': result.stderr}), 500
+    except Exception as e:
+        return jsonify({'status': 'error', 'output': str(e)}), 500
+
 @app.route('/')
 def home():
     return render_template('index.html')
