@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>All Edge TTS Voices</title>
+    <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #181c20; color: #f5f5f5; margin: 0; padding: 0; }
+        .container { max-width: 900px; margin: 40px auto; background: #23272b; border-radius: 12px; box-shadow: 0 4px 24px #0002; padding: 32px 24px; }
+        h1 { color: #6ec1e4; }
+        input, select { padding: 8px; margin: 8px 0; border-radius: 4px; border: none; }
+        table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+        th, td { padding: 8px 12px; border-bottom: 1px solid #333; }
+        th { background: #1a1d21; color: #6ec1e4; }
+        tr:hover { background: #2a2e33; }
+        .search-bar { width: 100%; max-width: 400px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>All Edge TTS Voices</h1>
+        <input id="search" class="search-bar" type="text" placeholder="Filter by name, locale, or gender...">
+        <table id="voicesTable">
+            <thead>
+                <tr>
+                    <th>Short Name</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for key, value in voices.items() %}
+                <tr>
+                    <td>{{ key }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <script>
+    const search = document.getElementById('search');
+    const table = document.getElementById('voicesTable');
+    search.addEventListener('input', function() {
+        const filter = search.value.toLowerCase();
+        for (const row of table.tBodies[0].rows) {
+            const text = row.cells[0].textContent.toLowerCase();
+            row.style.display = text.includes(filter) ? '' : 'none';
+        }
+    });
+    </script>
+</body>
+</html>
