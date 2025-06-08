@@ -64,8 +64,8 @@ def say():
 def update():
     import subprocess
     try:
-        # Pull latest changes from git
-        result = subprocess.run(['git', 'pull'], capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)))
+        # Pull latest changes from git main branch explicitly
+        result = subprocess.run(['git', 'pull', 'origin', 'main'], capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)))
         if result.returncode == 0:
             return jsonify({'status': 'ok', 'output': result.stdout})
         else:
