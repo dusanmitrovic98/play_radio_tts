@@ -16,7 +16,7 @@ PORT = int(os.getenv('PORT', 5002))
 MUSIC_FOLDER = 'tts'  # Updated to match actual folder
 current_song = None
 TTS_OUTPUT = os.path.join(MUSIC_FOLDER, "tts-latest.mp3")
-TTS_VOICE = "en-US-GuyNeural"  # You can change this if needed
+TTS_VOICE = "en-IN-PrabhatNeural"  # You can change this if needed
 
 VOICES_FILE = os.path.join(os.path.dirname(__file__), 'voices.json')
 
@@ -115,6 +115,16 @@ def use_voice(name):
         return jsonify({'error': 'Voice not found'}), 404
     TTS_VOICE = voice
     return jsonify({'status': 'ok', 'voice': TTS_VOICE})
+
+@app.route('/useall/<int:index>', methods=['GET', 'POST'])
+def useall_voice(index):
+    with open(VOICES_FILE, 'r', encoding='utf-8') as f:
+        voices = list(json.load(f).values())
+    if index < 1 or index > len(voices):
+        return jsonify({'error': f'Index out of range. Must be 1 to {len(voices)}'}), 400
+    global TTS_VOICE
+    TTS_VOICE = voices[index - 1]
+    return jsonify({'status': 'ok', 'voice': TTS_VOICE, 'index': index})
 
 @app.route('/update', methods=['GET', 'POST'])
 def update():
