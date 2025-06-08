@@ -60,7 +60,7 @@ def say():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/update', methods=['POST'])
+@app.route('/update', methods=['GET', 'POST'])
 def update():
     import subprocess
     try:
