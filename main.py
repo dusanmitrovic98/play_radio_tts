@@ -5,7 +5,7 @@ import subprocess
 import json
 import asyncio
 import edge_tts
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request, render_template, abort
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from watchdog.observers import Observer
@@ -22,7 +22,7 @@ def get_config():
     load_dotenv()
     base_dir = Path(__file__).parent.resolve()
     tts_dir = base_dir / 'tts'
-    tts_dir.mkdir(exist_ok=True)  # Ensure tts directory exists once
+    tts_dir.mkdir(exist_ok=True)
     return {
         'TTS_FOLDER': str(tts_dir),
         'SILENCE_FILE': str(base_dir / 'fur-elise.mp3'),
@@ -58,7 +58,8 @@ class StreamQueue:
         self.current_file = None
 
     def add_file(self, path):
-        self.queue.queue.clear()  # Only one thread adds files, so mutex is not needed
+        with self.queue.mutex:
+            self.queue.queue.clear()
         self.queue.put(path)
 
     def get_next(self):
@@ -109,7 +110,10 @@ def get_voice(name):
 def delete_old_tts_files(max_keep=5):
     tts_files = sorted(Path(TTS_FOLDER).glob('tts-*.mp3'), key=lambda p: p.stat().st_mtime, reverse=True)
     for f in tts_files[max_keep:]:
-        f.unlink(missing_ok=True)
+        try:
+            f.unlink()
+        except FileNotFoundError:
+            pass
 
 async def generate_tts(text, voice):
     delete_old_tts_files()
