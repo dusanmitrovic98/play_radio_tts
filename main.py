@@ -11,7 +11,7 @@ from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from queue import Queue
+from queue import Queue, Empty
 import imageio_ffmpeg as ffmpeg
 from pathlib import Path
 import signal
@@ -195,49 +195,61 @@ tts_worker.start()
 BACKGROUND_FILE = str(Path('background.mp3').resolve())
 
 # --- Flask Streaming Endpoint for Live Radio ---
+# Use a global broadcast thread and queue for true radio
+broadcast_queue = Queue(maxsize=100)
+current_tts_file = None
+broadcast_lock = threading.Lock()
+
+def broadcast_thread():
+    global current_tts_file
+    while True:
+        # Determine what to play: new TTS or background
+        with broadcast_lock:
+            tts_files = sorted(Path(TTS_FOLDER).glob('tts-*.mp3'), key=lambda p: p.stat().st_mtime, reverse=True)
+            tts_file = str(tts_files[0]) if tts_files else None
+            if tts_file and tts_file != current_tts_file:
+                file_to_stream = tts_file
+                current_tts_file = tts_file
+            else:
+                file_to_stream = SILENCE_FILE
+        print(f"[Broadcast] Streaming: {file_to_stream}")
+        with subprocess.Popen([
+            ffmpeg_path, '-hide_banner', '-loglevel', 'quiet',
+            '-re', '-i', file_to_stream,
+            '-vn', '-acodec', 'libmp3lame',
+            '-ar', '44100', '-ac', '2', '-b:a', '128k',
+            '-f', 'mp3', '-'
+        ], stdout=subprocess.PIPE) as process:
+            try:
+                while True:
+                    chunk = process.stdout.read(4096)
+                    if not chunk:
+                        break
+                    try:
+                        broadcast_queue.put(chunk, timeout=1)
+                    except Exception:
+                        pass  # If queue is full, drop chunk
+                # If TTS just finished, go to background
+                with broadcast_lock:
+                    if file_to_stream == current_tts_file:
+                        current_tts_file = None
+            except Exception as e:
+                print(f"[Broadcast] Error: {e}")
+                process.kill()
+                continue
+
+# Start the broadcast thread
+threading.Thread(target=broadcast_thread, daemon=True).start()
+
 @app.route('/stream', methods=['GET'])
 def stream():
     def generate():
-        last_tts_file = None
-        tts_played = False
         while True:
-            # Find the latest TTS file
-            tts_files = sorted(Path(TTS_FOLDER).glob('tts-*.mp3'), key=lambda p: p.stat().st_mtime, reverse=True)
-            tts_file = str(tts_files[0]) if tts_files else None
-            # If a new TTS file is detected, play it once for everyone
-            if tts_file and tts_file != last_tts_file:
-                file_to_stream = tts_file
-                last_tts_file = tts_file
-                tts_played = False
-            elif not tts_file or tts_played:
-                file_to_stream = SILENCE_FILE  # Loop fur-elise.mp3
-            else:
-                file_to_stream = tts_file
-            print(f"[Stream] Streaming: {file_to_stream}")
-            with subprocess.Popen([
-                ffmpeg_path, '-hide_banner', '-loglevel', 'quiet',
-                '-re', '-i', file_to_stream,
-                '-vn', '-acodec', 'libmp3lame',
-                '-ar', '44100', '-ac', '2', '-b:a', '128k',
-                '-f', 'mp3', '-'
-            ], stdout=subprocess.PIPE) as process:
-                try:
-                    while True:
-                        chunk = process.stdout.read(4096)
-                        if not chunk:
-                            break
-                        yield chunk
-                    # After TTS finishes, mark as played
-                    if file_to_stream == tts_file:
-                        tts_played = True
-                except GeneratorExit:
-                    print("[Stream] Client disconnected.")
-                    process.kill()
-                    break
-                except Exception as e:
-                    print(f"[Stream] Error: {e}")
-                    process.kill()
-                    break
+            try:
+                chunk = broadcast_queue.get(timeout=10)
+                yield chunk
+            except Empty:
+                continue
     headers = {
         "Content-Type": "audio/mpeg",
         "Cache-Control": "no-cache",
