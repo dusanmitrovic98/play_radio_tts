@@ -230,7 +230,8 @@ def say():
 
 @app.route('/voices', methods=['GET'])
 def get_voices():
-    return ALL_VOICES_DICT
+    # Return a list of voice names in the correct order
+    return json.dumps(list(ALL_VOICES_DICT.keys())), 200, {'Content-Type': 'application/json'}
 
 @app.route('/use/<int:voice_num>', methods=['POST'])
 def use_voice(voice_num):
