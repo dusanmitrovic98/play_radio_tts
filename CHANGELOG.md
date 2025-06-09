@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.0.6] - 2025-06-09
+### Changed
+- Updated `LiveStreamManager` to handle multiple TTS injections without restarting the stream.
+- Added `inject_tts` method to `LiveStreamManager` for injecting new TTS audio into the live stream.    
+
 ## [0.0.5] - 2025-06-09
 ### Changed
 - Switched to a true live radio stream using FFmpeg HTTP output, managed directly from `main.py`.
