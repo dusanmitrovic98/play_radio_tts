@@ -27,16 +27,15 @@ def get_config() -> dict:
         'TTS_FOLDER': str(tts_dir),
         'SILENCE_FILE': str(base_dir / 'fur-elise.mp3'),
         'PORT': int(os.getenv('PORT', 5002)),
-        'VOICES_FILE': str(base_dir / 'voices.json'),
         'TTS_OUTPUT': str(tts_dir / 'tts-latest.mp3'),
-        'DEFAULT_VOICE': "en-IN-PrabhatNeural"
+        'DEFAULT_VOICE': "en-US-GuyNeural"
     }
+# en-IN-PrabhatNeural
 
 config = get_config()
 TTS_FOLDER = config['TTS_FOLDER']
 SILENCE_FILE = config['SILENCE_FILE']
 PORT = config['PORT']
-VOICES_FILE = config['VOICES_FILE']
 TTS_OUTPUT = config['TTS_OUTPUT']
 TTS_VOICE = config['DEFAULT_VOICE']
 
@@ -115,25 +114,6 @@ def run_watcher():
     observer.join()
 
 # --- Utility Functions ---
-def load_voices() -> dict:
-    """Load voices from the voices.json file, or return default."""
-    if not os.path.exists(VOICES_FILE):
-        return {"default": state.tts_voice}
-    with open(VOICES_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-def save_voices(voices: dict):
-    """Atomically save voices to the voices.json file."""
-    temp_file = VOICES_FILE + '.tmp'
-    with open(temp_file, 'w', encoding='utf-8') as f:
-        json.dump(voices, f, ensure_ascii=False, indent=2)
-    os.replace(temp_file, VOICES_FILE)  # Atomic operation on most OSes
-
-def get_voice(name: str) -> str:
-    """Get a voice by name, or return the default voice."""
-    voices = load_voices()
-    return voices.get(name) or voices.get('default') or state.tts_voice
-
 def delete_old_tts_files(max_keep: int = 5):
     """Delete old TTS files, keeping only the most recent max_keep files."""
     tts_files = sorted(Path(TTS_FOLDER).glob('tts-*.mp3'), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -150,6 +130,11 @@ async def generate_tts(text: str, voice: str) -> str:
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(str(out_file))
     return str(out_file)
+
+# Load all voices from all_voices.json at startup
+with open('all_voices.json', 'r', encoding='utf-8') as f:
+    ALL_VOICES_DICT = json.load(f)
+    ALL_VOICES_LIST = list(ALL_VOICES_DICT.values())
 
 # --- TTS Request Queue and Worker ---
 class TTSRequest:
@@ -245,27 +230,15 @@ def say():
 
 @app.route('/voices', methods=['GET'])
 def get_voices():
-    return load_voices()
+    return ALL_VOICES_DICT
 
-@app.route('/voice', methods=['POST'])
-def add_voice():
-    data = request.get_json()
-    name = data.get('name')
-    value = data.get('value')
-    if not name or not value:
-        return {'error': 'Missing name or value'}, 400
-    voices = load_voices()
-    voices[name] = value
-    save_voices(voices)
-    return {'status': 'ok', 'voices': voices}
-
-@app.route('/use/<name>', methods=['POST'])
-def use_voice(name):
-    voice = get_voice(name)
-    if not voice:
-        return {'error': 'Voice not found'}, 404
-    state.tts_voice = voice
-    return {'status': 'ok', 'voice': state.tts_voice}
+@app.route('/use/<int:voice_num>', methods=['POST'])
+def use_voice(voice_num):
+    if 1 <= voice_num <= len(ALL_VOICES_LIST):
+        selected_voice = ALL_VOICES_LIST[voice_num - 1]
+        state.tts_voice = selected_voice
+        return {'status': 'ok', 'voice': state.tts_voice}
+    return {'error': 'Voice not found'}, 404
 
 @app.route('/')
 def home():

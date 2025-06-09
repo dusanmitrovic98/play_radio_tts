@@ -1,5 +1,19 @@
 # Changelog
 
+[Unreleased]:
+
+## [0.0.8] - 2025-06-09
+
+### Changed
+- Refactored voice management to use only all_voices.json for available voices.
+- /voices endpoint now returns all voices from all_voices.json.
+- /use/<number> endpoint sets the TTS voice by numeric index from all_voices.json (1-based).
+- Default TTS voice is now en-US-GuyNeural for improved clarity.
+
+### Removed
+- All logic and endpoints related to voices.json and custom voice saving.
+- The /voice endpoint for adding custom voices.
+
 ## [0.0.7] - 2025-06-09
 ### Added
 - Seems like the most stable version yet.
