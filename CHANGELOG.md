@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.4] - 2025-06-09
+### Fixed
+- TTS is now broadcast to all clients only once per trigger.
+- After TTS finishes, the stream automatically switches to looping background.mp3 for all clients.
+- Prevents repeated playback of the same TTS until a new broadcast is triggered.
+
 ## [0.0.3] - 2025-06-09
 ### Changed
 - Switched from per-client queue-based streaming to a broadcast model using a shared StreamState.
