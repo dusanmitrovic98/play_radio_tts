@@ -20,7 +20,7 @@ print("FFmpeg path:", ffmpeg_path)
 # --- Config ---
 load_dotenv()
 TTS_FOLDER = os.path.abspath('tts')
-SILENCE_FILE = os.path.abspath('background.mp3')
+SILENCE_FILE = os.path.abspath('fur-elise.mp3')
 PORT = int(os.getenv('PORT', 5002))
 VOICES_FILE = os.path.join(os.path.dirname(__file__), 'voices.json')
 TTS_OUTPUT = os.path.join(TTS_FOLDER, 'tts-latest.mp3')
