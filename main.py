@@ -221,9 +221,10 @@ def play(file_name):
 def stream():
     from flask import Response
     def generate():
+        background_file = SILENCE_FILE  # Use your configured silence/background file
         last_file = None
         while True:
-            file_to_stream = stream_state.get_file() or SILENCE_FILE
+            file_to_stream = stream_state.get_file() or background_file
             if file_to_stream != last_file:
                 print(f"[Stream] Streaming: {file_to_stream}")
                 last_file = file_to_stream
@@ -248,11 +249,11 @@ def stream():
                             print("[Stream] New file set, switching...")
                             process.kill()
                             break
-                    background_file = "fur-elise.mp3"
                     # After TTS file finishes, if it was not background, switch to background
                     if file_to_stream != background_file and file_to_stream != SILENCE_FILE:
-                        # Set background as the current file for all clients
-                        stream_state.set_file(background_file)
+                        # Only set background if not already set
+                        if stream_state.get_file() == file_to_stream:
+                            stream_state.set_file(background_file)
                 except GeneratorExit:
                     print("[Stream] Client disconnected.")
                     process.kill()
@@ -300,7 +301,7 @@ def home():
     return render_template('index.html')
 
 if __name__ == "__main__":
-    print(f"[Server] Running on https://play-radio-tts.onrender.com:{PORT} (or http://localhost:{PORT} for local testing)")
+    print(f"[Server] Running on https://play-radio-tts.onrender.com/stream (or http://localhost:{PORT}/stream for local testing)")
     watcher_thread = threading.Thread(target=run_watcher, daemon=True)
     watcher_thread.start()
     app.run(host="0.0.0.0", port=PORT)
