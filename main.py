@@ -28,7 +28,7 @@ def get_config() -> dict:
         'SILENCE_FILE': str(base_dir / 'fur-elise.mp3'),
         'PORT': int(os.getenv('PORT', 5002)),
         'TTS_OUTPUT': str(tts_dir / 'tts-latest.mp3'),
-        'DEFAULT_VOICE': "en-US-GuyNeural"
+        'DEFAULT_VOICE': "en-IN-PrabhatNeural"
     }
 # en-IN-PrabhatNeural
 
