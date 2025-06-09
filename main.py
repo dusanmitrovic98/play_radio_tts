@@ -6,14 +6,16 @@ import json
 import asyncio
 from turtle import back
 import edge_tts
-from flask import Flask, jsonify, request, render_template, abort
+from flask import Flask, jsonify, request, render_template, abort, Response
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from queue import Queue
+from queue import Queue, Empty
 import imageio_ffmpeg as ffmpeg
 from pathlib import Path
+import signal
+from collections import deque
 
 ffmpeg_path = ffmpeg.get_ffmpeg_exe()
 print("FFmpeg path:", ffmpeg_path)
@@ -179,7 +181,8 @@ class TTSWorker(threading.Thread):
             try:
                 out_file = asyncio.run(generate_tts(req.text, req.voice))
                 req.filename = os.path.basename(out_file)
-                stream_state.set_file(out_file)  # Will schedule start in 2s
+                # Inject TTS into live stream
+                # live_stream.play_tts(out_file)
             except Exception as e:
                 req.error = str(e)
             finally:
@@ -189,6 +192,90 @@ class TTSWorker(threading.Thread):
 _tts_request_queue = Queue()
 tts_worker = TTSWorker(_tts_request_queue)
 tts_worker.start()
+
+BACKGROUND_FILE = str(Path('background.mp3').resolve())
+
+# --- Flask Streaming Endpoint for Live Radio ---
+# Use a global broadcast thread and a single shared buffer for true radio
+BROADCAST_CHUNK_SIZE = 4096
+BROADCAST_BUFFER_SIZE = 256  # Number of chunks to keep in buffer
+broadcast_buffer = deque(maxlen=BROADCAST_BUFFER_SIZE)
+broadcast_clients = set()
+broadcast_lock = threading.Lock()
+current_tts_file = None
+
+def broadcast_thread():
+    global current_tts_file
+    while True:
+        # Determine what to play: new TTS or background
+        with broadcast_lock:
+            tts_files = sorted(Path(TTS_FOLDER).glob('tts-*.mp3'), key=lambda p: p.stat().st_mtime, reverse=True)
+            tts_file = str(tts_files[0]) if tts_files else None
+            if tts_file and tts_file != current_tts_file:
+                file_to_stream = tts_file
+                current_tts_file = tts_file
+            else:
+                file_to_stream = SILENCE_FILE
+        print(f"[Broadcast] Streaming: {file_to_stream}")
+        with subprocess.Popen([
+            ffmpeg_path, '-hide_banner', '-loglevel', 'quiet',
+            '-re', '-i', file_to_stream,
+            '-vn', '-acodec', 'libmp3lame',
+            '-ar', '44100', '-ac', '2', '-b:a', '128k',
+            '-f', 'mp3', '-'
+        ], stdout=subprocess.PIPE) as process:
+            try:
+                while True:
+                    chunk = process.stdout.read(BROADCAST_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    with broadcast_lock:
+                        broadcast_buffer.append(chunk)
+                # If TTS just finished, go to background
+                with broadcast_lock:
+                    if file_to_stream == current_tts_file:
+                        current_tts_file = None
+            except Exception as e:
+                print(f"[Broadcast] Error: {e}")
+                process.kill()
+                continue
+
+# Start the broadcast thread
+threading.Thread(target=broadcast_thread, daemon=True).start()
+
+@app.route('/stream', methods=['GET'])
+def stream():
+    def generate():
+        # On connect, start at the end of the buffer (live position)
+        buffer_pos = 0
+        while True:
+            with broadcast_lock:
+                buffer_len = len(broadcast_buffer)
+                if buffer_len == 0:
+                    time.sleep(0.1)
+                    continue
+                # Always start at the end (live)
+                buffer_pos = buffer_len
+            while True:
+                with broadcast_lock:
+                    if buffer_pos < len(broadcast_buffer):
+                        chunk = broadcast_buffer[buffer_pos]
+                        buffer_pos += 1
+                    else:
+                        chunk = None
+                if chunk:
+                    yield chunk
+                else:
+                    time.sleep(0.05)
+    headers = {
+        "Content-Type": "audio/mpeg",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "icy-name": "Python Radio",
+        "icy-metaint": "0",
+        "Connection": "close"
+    }
+    return Response(generate(), headers=headers)
 
 # --- Flask Endpoints ---
 @app.route('/say', methods=['POST'])
@@ -223,59 +310,12 @@ def play(file_name):
         return jsonify({"message": f"Now playing: {state.current_song}"})
     abort(404, description="File not found")
 
-@app.route('/stream', methods=['GET'])
-def stream():
-    from flask import Response
-    def generate():
-        last_file = None
-        while True:
-            file_to_stream = stream_state.get_file() or SILENCE_FILE
-            if file_to_stream != last_file:
-                print(f"[Stream] Streaming: {file_to_stream}")
-                last_file = file_to_stream
-            with subprocess.Popen(
-                [
-                    ffmpeg_path, '-hide_banner', '-loglevel', 'quiet',
-                    '-re', '-i', file_to_stream,
-                    '-vn', '-acodec', 'libmp3lame',
-                    '-ar', '44100', '-ac', '2', '-b:a', '128k',
-                    '-f', 'mp3', '-'
-                ],
-                stdout=subprocess.PIPE
-            ) as process:
-                try:
-                    while True:
-                        chunk = process.stdout.read(4096)
-                        if not chunk:
-                            break
-                        yield chunk
-                        # If a new file is set, break and restart stream
-                        if stream_state.get_file() != file_to_stream:
-                            print("[Stream] New file set, switching...")
-                            process.kill()
-                            break
-                    background_file = "fur-elise.mp3"
-                    # After TTS file finishes, if it was not background, switch to background
-                    if file_to_stream != background_file and file_to_stream != SILENCE_FILE:
-                        # Set background as the current file for all clients
-                        stream_state.set_file(background_file)
-                except GeneratorExit:
-                    print("[Stream] Client disconnected.")
-                    process.kill()
-                    break
-                except Exception as e:
-                    print(f"[Stream] Error: {e}")
-                    process.kill()
-                    break
-    headers = {
-        "Content-Type": "audio/mpeg",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "icy-name": "Python Radio",
-        "icy-metaint": "0",
-        "Connection": "close"
-    }
-    return Response(generate(), headers=headers)
+@app.route('/current', methods=['GET'])
+def current():
+    return jsonify({
+        'stream_url': request.url_root.rstrip('/') + '/stream',
+        'current_tts': None
+    })
 
 @app.route('/voices', methods=['GET'])
 def get_voices():
@@ -301,20 +341,11 @@ def use_voice(name):
     state.tts_voice = voice
     return jsonify({'status': 'ok', 'voice': state.tts_voice})
 
-@app.route('/current', methods=['GET'])
-def current():
-    return jsonify({
-        'file': stream_state.get_file(),
-        'scheduled_start': stream_state.get_scheduled_start(),
-        'last_update': stream_state.get_last_update()
-    })
-
 @app.route('/')
 def home():
     return render_template('index.html')
 
 if __name__ == "__main__":
-    print(f"[Server] Running on https://play-radio-tts.onrender.com/stream (or http://localhost:{PORT}/stream for local testing)")
     watcher_thread = threading.Thread(target=run_watcher, daemon=True)
     watcher_thread.start()
     app.run(host="0.0.0.0", port=PORT)
