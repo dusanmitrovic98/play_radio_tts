@@ -4,3 +4,4 @@ werkzeug
 edge-tts
 dotenv
 imageio-ffmpeg
+watchdog
