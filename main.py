@@ -18,7 +18,8 @@ ffmpeg_path = ffmpeg.get_ffmpeg_exe()
 print("FFmpeg path:", ffmpeg_path)
 
 # --- Config ---
-def get_config():
+def get_config() -> dict:
+    """Load configuration from environment and set up directories."""
     load_dotenv()
     base_dir = Path(__file__).parent.resolve()
     tts_dir = base_dir / 'tts'
@@ -42,11 +43,33 @@ TTS_VOICE = config['DEFAULT_VOICE']
 
 app = Flask(__name__, static_folder='assets', template_folder='templates')
 
-# --- State ---
+# --- yeState ---
 class AppState:
+    """Thread-safe application state for current song and TTS voice."""
     def __init__(self):
-        self.current_song = None
-        self.tts_voice = TTS_VOICE
+        self._lock = threading.Lock()
+        self._current_song: str | None = None
+        self._tts_voice: str = TTS_VOICE
+
+    @property
+    def current_song(self) -> str | None:
+        with self._lock:
+            return self._current_song
+
+    @current_song.setter
+    def current_song(self, value: str | None):
+        with self._lock:
+            self._current_song = value
+
+    @property
+    def tts_voice(self) -> str:
+        with self._lock:
+            return self._tts_voice
+
+    @tts_voice.setter
+    def tts_voice(self, value: str):
+        with self._lock:
+            self._tts_voice = value
 
 state = AppState()
 
@@ -54,22 +77,33 @@ state = AppState()
 class StreamQueue:
     """Thread-safe queue for streaming audio files."""
     def __init__(self):
-        self.queue = Queue()
-        self.current_file = None
+        self.queue: Queue = Queue()
+        self.current_file: str | None = None
+        self.lock = threading.Lock()
 
-    def add_file(self, path):
-        with self.queue.mutex:
-            self.queue.queue.clear()
-        self.queue.put(path)
+    def add_file(self, path: str):
+        """Clear the queue and add a new file in a thread-safe way."""
+        with self.lock:
+            # Clear the queue in a thread-safe way
+            while not self.queue.empty():
+                try:
+                    self.queue.get_nowait()
+                except Exception:
+                    break
+            self.queue.put(path)
 
-    def get_next(self):
-        if not self.queue.empty():
-            self.current_file = self.queue.get()
-            return self.current_file
-        return None
+    def get_next(self) -> str | None:
+        """Get the next file to stream, or None if empty."""
+        with self.lock:
+            if not self.queue.empty():
+                self.current_file = self.queue.get()
+                return self.current_file
+            return None
 
-    def has_next(self):
-        return not self.queue.empty()
+    def has_next(self) -> bool:
+        """Check if there are more files in the queue."""
+        with self.lock:
+            return not self.queue.empty()
 
 stream_queue = StreamQueue()
 
@@ -93,21 +127,27 @@ def run_watcher():
     observer.join()
 
 # --- Utility Functions ---
-def load_voices():
+def load_voices() -> dict:
+    """Load voices from the voices.json file, or return default."""
     if not os.path.exists(VOICES_FILE):
         return {"default": state.tts_voice}
     with open(VOICES_FILE, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-def save_voices(voices):
-    with open(VOICES_FILE, 'w', encoding='utf-8') as f:
+def save_voices(voices: dict):
+    """Atomically save voices to the voices.json file."""
+    temp_file = VOICES_FILE + '.tmp'
+    with open(temp_file, 'w', encoding='utf-8') as f:
         json.dump(voices, f, ensure_ascii=False, indent=2)
+    os.replace(temp_file, VOICES_FILE)  # Atomic operation on most OSes
 
-def get_voice(name):
+def get_voice(name: str) -> str:
+    """Get a voice by name, or return the default voice."""
     voices = load_voices()
     return voices.get(name, voices.get('default', state.tts_voice))
 
-def delete_old_tts_files(max_keep=5):
+def delete_old_tts_files(max_keep: int = 5):
+    """Delete old TTS files, keeping only the most recent max_keep files."""
     tts_files = sorted(Path(TTS_FOLDER).glob('tts-*.mp3'), key=lambda p: p.stat().st_mtime, reverse=True)
     for f in tts_files[max_keep:]:
         try:
@@ -115,12 +155,44 @@ def delete_old_tts_files(max_keep=5):
         except FileNotFoundError:
             pass
 
-async def generate_tts(text, voice):
+async def generate_tts(text: str, voice: str) -> str:
+    """Generate TTS audio and return the output file path."""
     delete_old_tts_files()
     out_file = Path(TTS_FOLDER) / f"tts-{int(time.time())}.mp3"
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(str(out_file))
     return str(out_file)
+
+# --- TTS Request Queue and Worker ---
+class TTSRequest:
+    def __init__(self, text: str, voice: str):
+        self.text = text
+        self.voice = voice
+        self.filename = None
+        self.done = threading.Event()
+        self.error = None
+
+class TTSWorker(threading.Thread):
+    def __init__(self, tts_queue: Queue):
+        super().__init__(daemon=True)
+        self.tts_queue = tts_queue
+
+    def run(self):
+        while True:
+            req: TTSRequest = self.tts_queue.get()
+            try:
+                out_file = asyncio.run(generate_tts(req.text, req.voice))
+                req.filename = os.path.basename(out_file)
+                stream_queue.add_file(out_file)
+            except Exception as e:
+                req.error = str(e)
+            finally:
+                req.done.set()
+
+# Create the TTS request queue and start the worker
+_tts_request_queue = Queue()
+tts_worker = TTSWorker(_tts_request_queue)
+tts_worker.start()
 
 # --- Flask Endpoints ---
 @app.route('/say', methods=['POST'])
@@ -130,13 +202,10 @@ def say():
     voice = data.get('voice') or state.tts_voice
     if not text:
         return jsonify({'error': 'Missing text'}), 400
-    try:
-        out_file = asyncio.run(generate_tts(text, voice))
-        state.current_song = os.path.basename(out_file)
-        stream_queue.add_file(out_file)
-        return jsonify({'status': 'ok', 'audio_path': state.current_song})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    req = TTSRequest(text, voice)
+    _tts_request_queue.put(req)
+    # Respond immediately, let the client poll /songs or /stream for updates
+    return jsonify({'status': 'queued', 'message': 'TTS request queued. Audio will play soon.'})
 
 @app.route('/songs', methods=['GET'])
 def list_songs():
@@ -148,7 +217,10 @@ def list_songs():
 @app.route('/play/<file_name>', methods=['GET'])
 def play(file_name):
     safe_file = secure_filename(file_name)
-    file_path = os.path.join(TTS_FOLDER, safe_file)
+    file_path = os.path.abspath(os.path.join(TTS_FOLDER, safe_file))
+    # Ensure the file is within the TTS_FOLDER
+    if not file_path.startswith(os.path.abspath(TTS_FOLDER) + os.sep):
+        abort(400, description="Invalid file path")
     if os.path.isfile(file_path) and safe_file.endswith('.mp3'):
         state.current_song = safe_file
         stream_queue.add_file(file_path)
