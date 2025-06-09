@@ -74,45 +74,34 @@ class AppState:
 state = AppState()
 
 # --- Streaming Logic ---
-class StreamQueue:
-    """Thread-safe queue for streaming audio files."""
+class StreamState:
+    """Thread-safe state for broadcasting the current audio file to all clients."""
     def __init__(self):
-        self.queue: Queue = Queue()
+        self._lock = threading.Lock()
         self.current_file: str | None = None
-        self.lock = threading.Lock()
+        self.last_update: float = 0.0
 
-    def add_file(self, path: str):
-        """Clear the queue and add a new file in a thread-safe way."""
-        with self.lock:
-            # Clear the queue in a thread-safe way
-            while not self.queue.empty():
-                try:
-                    self.queue.get_nowait()
-                except Exception:
-                    break
-            self.queue.put(path)
+    def set_file(self, path: str):
+        with self._lock:
+            self.current_file = path
+            self.last_update = time.time()
 
-    def get_next(self) -> str | None:
-        """Get the next file to stream, or None if empty."""
-        with self.lock:
-            if not self.queue.empty():
-                self.current_file = self.queue.get()
-                return self.current_file
-            return None
+    def get_file(self) -> str | None:
+        with self._lock:
+            return self.current_file
 
-    def has_next(self) -> bool:
-        """Check if there are more files in the queue."""
-        with self.lock:
-            return not self.queue.empty()
+    def get_last_update(self) -> float:
+        with self._lock:
+            return self.last_update
 
-stream_queue = StreamQueue()
+stream_state = StreamState()
 
 class TTSWatcher(FileSystemEventHandler):
-    """Watches the TTS folder for new mp3 files and queues them for streaming."""
+    """Watches the TTS folder for new mp3 files and sets them as the current file."""
     def on_created(self, event):
         if event.src_path.endswith(".mp3"):
             print(f"[Watcher] New file detected: {event.src_path}")
-            stream_queue.add_file(event.src_path)
+            stream_state.set_file(event.src_path)
 
 def run_watcher():
     observer = Observer()
@@ -183,7 +172,7 @@ class TTSWorker(threading.Thread):
             try:
                 out_file = asyncio.run(generate_tts(req.text, req.voice))
                 req.filename = os.path.basename(out_file)
-                stream_queue.add_file(out_file)
+                stream_state.set_file(out_file)
             except Exception as e:
                 req.error = str(e)
             finally:
@@ -223,7 +212,7 @@ def play(file_name):
         abort(400, description="Invalid file path")
     if os.path.isfile(file_path) and safe_file.endswith('.mp3'):
         state.current_song = safe_file
-        stream_queue.add_file(file_path)
+        stream_state.set_file(file_path)
         return jsonify({"message": f"Now playing: {state.current_song}"})
     abort(404, description="File not found")
 
@@ -231,11 +220,12 @@ def play(file_name):
 def stream():
     from flask import Response
     def generate():
+        last_file = None
         while True:
-            file_to_stream = stream_queue.get_next()
-            if not file_to_stream:
-                file_to_stream = SILENCE_FILE
-            print(f"[Stream] Streaming: {file_to_stream}")
+            file_to_stream = stream_state.get_file() or SILENCE_FILE
+            if file_to_stream != last_file:
+                print(f"[Stream] Streaming: {file_to_stream}")
+                last_file = file_to_stream
             with subprocess.Popen(
                 [
                     ffmpeg_path, '-hide_banner', '-loglevel', 'quiet',
@@ -252,8 +242,9 @@ def stream():
                         if not chunk:
                             break
                         yield chunk
-                        if stream_queue.has_next():
-                            print("[Stream] New file queued, switching...")
+                        # If a new file is set, break and restart stream
+                        if stream_state.get_file() != file_to_stream:
+                            print("[Stream] New file set, switching...")
                             process.kill()
                             break
                 except GeneratorExit:
