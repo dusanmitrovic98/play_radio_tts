@@ -3,3 +3,4 @@ flask-cors
 werkzeug
 edge-tts
 dotenv
+ffmpeg-python
