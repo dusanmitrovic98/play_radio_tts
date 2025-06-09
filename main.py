@@ -15,6 +15,7 @@ from queue import Queue, Empty
 import imageio_ffmpeg as ffmpeg
 from pathlib import Path
 import signal
+from collections import deque
 
 ffmpeg_path = ffmpeg.get_ffmpeg_exe()
 print("FFmpeg path:", ffmpeg_path)
@@ -195,10 +196,13 @@ tts_worker.start()
 BACKGROUND_FILE = str(Path('background.mp3').resolve())
 
 # --- Flask Streaming Endpoint for Live Radio ---
-# Use a global broadcast thread and queue for true radio
-broadcast_queue = Queue(maxsize=100)
-current_tts_file = None
+# Use a global broadcast thread and a single shared buffer for true radio
+BROADCAST_CHUNK_SIZE = 4096
+BROADCAST_BUFFER_SIZE = 256  # Number of chunks to keep in buffer
+broadcast_buffer = deque(maxlen=BROADCAST_BUFFER_SIZE)
+broadcast_clients = set()
 broadcast_lock = threading.Lock()
+current_tts_file = None
 
 def broadcast_thread():
     global current_tts_file
@@ -222,13 +226,11 @@ def broadcast_thread():
         ], stdout=subprocess.PIPE) as process:
             try:
                 while True:
-                    chunk = process.stdout.read(4096)
+                    chunk = process.stdout.read(BROADCAST_CHUNK_SIZE)
                     if not chunk:
                         break
-                    try:
-                        broadcast_queue.put(chunk, timeout=1)
-                    except Exception:
-                        pass  # If queue is full, drop chunk
+                    with broadcast_lock:
+                        broadcast_buffer.append(chunk)
                 # If TTS just finished, go to background
                 with broadcast_lock:
                     if file_to_stream == current_tts_file:
@@ -244,12 +246,27 @@ threading.Thread(target=broadcast_thread, daemon=True).start()
 @app.route('/stream', methods=['GET'])
 def stream():
     def generate():
+        # On connect, start at the end of the buffer (live position)
+        buffer_pos = 0
         while True:
-            try:
-                chunk = broadcast_queue.get(timeout=10)
-                yield chunk
-            except Empty:
-                continue
+            with broadcast_lock:
+                buffer_len = len(broadcast_buffer)
+                if buffer_len == 0:
+                    time.sleep(0.1)
+                    continue
+                # Always start at the end (live)
+                buffer_pos = buffer_len
+            while True:
+                with broadcast_lock:
+                    if buffer_pos < len(broadcast_buffer):
+                        chunk = broadcast_buffer[buffer_pos]
+                        buffer_pos += 1
+                    else:
+                        chunk = None
+                if chunk:
+                    yield chunk
+                else:
+                    time.sleep(0.05)
     headers = {
         "Content-Type": "audio/mpeg",
         "Cache-Control": "no-cache",
