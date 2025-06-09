@@ -4,10 +4,8 @@ import time
 import subprocess
 import json
 import asyncio
-from turtle import back
 import edge_tts
-from flask import Flask, jsonify, request, render_template, abort
-from werkzeug.utils import secure_filename
+from flask import Flask, request
 from dotenv import load_dotenv
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -134,7 +132,7 @@ def save_voices(voices: dict):
 def get_voice(name: str) -> str:
     """Get a voice by name, or return the default voice."""
     voices = load_voices()
-    return voices.get(name, voices.get('default', state.tts_voice))
+    return voices.get(name) or voices.get('default') or state.tts_voice
 
 def delete_old_tts_files(max_keep: int = 5):
     """Delete old TTS files, keeping only the most recent max_keep files."""
@@ -185,47 +183,13 @@ tts_worker = TTSWorker(_tts_request_queue)
 tts_worker.start()
 
 # --- Flask Endpoints ---
-@app.route('/say', methods=['POST'])
-def say():
-    data = request.get_json()
-    text = data.get('text')
-    voice = data.get('voice') or state.tts_voice
-    if not text:
-        return jsonify({'error': 'Missing text'}), 400
-    req = TTSRequest(text, voice)
-    _tts_request_queue.put(req)
-    # Respond immediately, let the client poll /songs or /stream for updates
-    return jsonify({'status': 'queued', 'message': 'TTS request queued. Audio will play soon.'})
-
-@app.route('/songs', methods=['GET'])
-def list_songs():
-    if not os.path.exists(TTS_FOLDER):
-        return jsonify({'error': 'Music folder not found'}), 500
-    files = [f for f in os.listdir(TTS_FOLDER) if f.endswith('.mp3')]
-    return jsonify({'songs': files})
-
-@app.route('/play/<file_name>', methods=['GET'])
-def play(file_name):
-    safe_file = secure_filename(file_name)
-    file_path = os.path.abspath(os.path.join(TTS_FOLDER, safe_file))
-    # Ensure the file is within the TTS_FOLDER
-    if not file_path.startswith(os.path.abspath(TTS_FOLDER) + os.sep):
-        abort(400, description="Invalid file path")
-    if os.path.isfile(file_path) and safe_file.endswith('.mp3'):
-        state.current_song = safe_file
-        stream_state.set_file(file_path)
-        return jsonify({"message": f"Now playing: {state.current_song}"})
-    abort(404, description="File not found")
-
 @app.route('/stream', methods=['GET'])
 def stream():
     from flask import Response
     def generate():
         last_file = None
         while True:
-            # Always get the current file to stream (TTS or background)
             file_to_stream = stream_state.get_file() or SILENCE_FILE
-            # Only print/log when the file actually changes
             if file_to_stream != last_file:
                 print(f"[Stream] Streaming: {file_to_stream}")
                 last_file = file_to_stream
@@ -245,23 +209,16 @@ def stream():
                         if not chunk:
                             break
                         yield chunk
-                        # If a new file is set (TTS interrupt), break and restart stream
                         current_file = stream_state.get_file() or SILENCE_FILE
                         if current_file != file_to_stream:
                             print("[Stream] New file set, switching...")
                             process.kill()
                             break
-                    # After TTS file is played, switch back to background (fur-elise.mp3)
-                    background_file = SILENCE_FILE
-                    # Only set background if the file was a TTS file and not already background
-                    if file_to_stream != background_file and stream_state.get_file() == file_to_stream:
-                        stream_state.set_file(background_file)
-                except GeneratorExit:
-                    print("[Stream] Client disconnected.")
-                    process.kill()
-                    break
-                except Exception as e:
-                    print(f"[Stream] Error: {e}")
+                    # After TTS file is played, switch back to background
+                    if file_to_stream != SILENCE_FILE and stream_state.get_file() == file_to_stream:
+                        stream_state.set_file(SILENCE_FILE)
+                except (GeneratorExit, Exception) as e:
+                    print(f"[Stream] Error or disconnect: {e}")
                     process.kill()
                     break
     headers = {
@@ -274,9 +231,21 @@ def stream():
     }
     return Response(generate(), headers=headers)
 
+@app.route('/say', methods=['POST'])
+def say():
+    data = request.get_json()
+    text = data.get('text')
+    voice = data.get('voice') or state.tts_voice
+    if not text:
+        return {'error': 'Missing text'}, 400
+    req = TTSRequest(text, voice)
+    _tts_request_queue.put(req)
+    # Respond immediately, let the client poll /stream for updates
+    return {'status': 'queued', 'message': 'TTS request queued. Audio will play soon.'}
+
 @app.route('/voices', methods=['GET'])
 def get_voices():
-    return jsonify(load_voices())
+    return load_voices()
 
 @app.route('/voice', methods=['POST'])
 def add_voice():
@@ -284,23 +253,23 @@ def add_voice():
     name = data.get('name')
     value = data.get('value')
     if not name or not value:
-        return jsonify({'error': 'Missing name or value'}), 400
+        return {'error': 'Missing name or value'}, 400
     voices = load_voices()
     voices[name] = value
     save_voices(voices)
-    return jsonify({'status': 'ok', 'voices': voices})
+    return {'status': 'ok', 'voices': voices}
 
 @app.route('/use/<name>', methods=['POST'])
 def use_voice(name):
     voice = get_voice(name)
     if not voice:
-        return jsonify({'error': 'Voice not found'}), 404
+        return {'error': 'Voice not found'}, 404
     state.tts_voice = voice
-    return jsonify({'status': 'ok', 'voice': state.tts_voice})
+    return {'status': 'ok', 'voice': state.tts_voice}
 
 @app.route('/')
 def home():
-    return render_template('index.html')
+    return app.send_static_file('index.html')
 
 if __name__ == "__main__":
     watcher_thread = threading.Thread(target=run_watcher, daemon=True)
