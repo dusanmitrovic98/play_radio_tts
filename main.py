@@ -6,7 +6,7 @@ import json
 import asyncio
 from turtle import back
 import edge_tts
-from flask import Flask, jsonify, request, render_template, abort
+from flask import Flask, jsonify, request, render_template, abort, Response
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from watchdog.observers import Observer
@@ -181,7 +181,7 @@ class TTSWorker(threading.Thread):
                 out_file = asyncio.run(generate_tts(req.text, req.voice))
                 req.filename = os.path.basename(out_file)
                 # Inject TTS into live stream
-                live_stream.play_tts(out_file)
+                # live_stream.play_tts(out_file)
             except Exception as e:
                 req.error = str(e)
             finally:
@@ -192,70 +192,56 @@ _tts_request_queue = Queue()
 tts_worker = TTSWorker(_tts_request_queue)
 tts_worker.start()
 
-# --- FFmpeg Live Stream Manager ---
-class LiveStreamManager:
-    def __init__(self, playlist_path, stream_url, background_file):
-        self.playlist_path = playlist_path
-        self.stream_url = stream_url
-        self.background_file = background_file
-        self.process = None
-        self.lock = threading.Lock()
-        self.current_tts = None
-
-    def start_stream(self):
-        with self.lock:
-            if self.process and self.process.poll() is None:
-                return  # Already running
-            cmd = [
-                ffmpeg_path, '-re', '-f', 'concat', '-safe', '0',
-                '-i', self.playlist_path,
-                '-f', 'mp3', '-content_type', 'audio/mpeg', self.stream_url
-            ]
-            print(f"[LiveStream] Starting FFmpeg: {' '.join(cmd)}")
-            self.process = subprocess.Popen(cmd)
-
-    def stop_stream(self):
-        with self.lock:
-            if self.process and self.process.poll() is None:
-                print("[LiveStream] Stopping FFmpeg process...")
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-            self.process = None
-
-    def update_playlist(self, tts_file=None):
-        with self.lock:
-            lines = []
-            if tts_file:
-                lines.append(f"file '{tts_file}'\n")
-            lines.append(f"file '{self.background_file}'\n")
-            with open(self.playlist_path, 'w', encoding='utf-8') as f:
-                f.writelines(lines)
-            print(f"[LiveStream] Updated playlist: {self.playlist_path}")
-
-    def play_tts(self, tts_file):
-        with self.lock:
-            self.update_playlist(tts_file)
-            self.stop_stream()
-            self.start_stream()
-            self.current_tts = tts_file
-
-    def ensure_running(self):
-        with self.lock:
-            if not self.process or self.process.poll() is not None:
-                self.update_playlist()
-                self.start_stream()
-
-# --- Initialize Live Stream Manager ---
-PLAYLIST_PATH = str(Path(TTS_FOLDER).parent / 'playlist.txt')
-STREAM_URL = 'http://0.0.0.0:8000/stream.mp3'
 BACKGROUND_FILE = str(Path('background.mp3').resolve())
-live_stream = LiveStreamManager(PLAYLIST_PATH, STREAM_URL, BACKGROUND_FILE)
 
-# Start the live stream on startup
-threading.Thread(target=live_stream.ensure_running, daemon=True).start()
+# --- Flask Streaming Endpoint for Live Radio ---
+@app.route('/stream', methods=['GET'])
+def stream():
+    def generate():
+        while True:
+            # Always play the current TTS if available, else background
+            tts_file = None
+            tts_files = sorted(Path(TTS_FOLDER).glob('tts-*.mp3'), key=lambda p: p.stat().st_mtime, reverse=True)
+            if tts_files:
+                tts_file = str(tts_files[0])
+            file_to_stream = tts_file if tts_file else BACKGROUND_FILE
+            print(f"[Stream] Streaming: {file_to_stream}")
+            with subprocess.Popen([
+                ffmpeg_path, '-hide_banner', '-loglevel', 'quiet',
+                '-re', '-i', file_to_stream,
+                '-vn', '-acodec', 'libmp3lame',
+                '-ar', '44100', '-ac', '2', '-b:a', '128k',
+                '-f', 'mp3', '-'
+            ], stdout=subprocess.PIPE) as process:
+                try:
+                    while True:
+                        chunk = process.stdout.read(4096)
+                        if not chunk:
+                            break
+                        yield chunk
+                        # If a new TTS file appears, break and restart
+                        new_tts_files = sorted(Path(TTS_FOLDER).glob('tts-*.mp3'), key=lambda p: p.stat().st_mtime, reverse=True)
+                        if new_tts_files and str(new_tts_files[0]) != file_to_stream:
+                            print("[Stream] New TTS detected, switching...")
+                            process.kill()
+                            break
+                except GeneratorExit:
+                    print("[Stream] Client disconnected.")
+                    process.kill()
+                    break
+                except Exception as e:
+                    print(f"[Stream] Error: {e}")
+                    process.kill()
+                    break
+    headers = {
+        "Content-Type": "audio/mpeg",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "icy-name": "Python Radio",
+        "icy-metaint": "0",
+        "Connection": "close"
+    }
+    return Response(generate(), headers=headers)
 
 # --- Flask Endpoints ---
 @app.route('/say', methods=['POST'])
@@ -293,15 +279,8 @@ def play(file_name):
 @app.route('/current', methods=['GET'])
 def current():
     return jsonify({
-        'stream_url': live_stream.stream_url,
-        'current_tts': live_stream.current_tts
-    })
-
-@app.route('/stream', methods=['GET'])
-def stream():
-    return jsonify({
-        'message': 'Use the live stream URL',
-        'stream_url': live_stream.stream_url
+        'stream_url': request.url_root.rstrip('/') + '/stream',
+        'current_tts': None
     })
 
 @app.route('/voices', methods=['GET'])
