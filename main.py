@@ -76,16 +76,18 @@ state = AppState()
 
 # --- Streaming Logic ---
 class StreamState:
-    """Thread-safe state for broadcasting the current audio file to all clients."""
+    """Thread-safe state for broadcasting the current audio file to all clients, with scheduled start."""
     def __init__(self):
         self._lock = threading.Lock()
         self.current_file: str | None = None
         self.last_update: float = 0.0
+        self.scheduled_start: float | None = None  # Unix timestamp
 
-    def set_file(self, path: str):
+    def set_file(self, path: str, schedule_delay: float = 2.0):
         with self._lock:
             self.current_file = path
             self.last_update = time.time()
+            self.scheduled_start = self.last_update + schedule_delay if path and path != 'fur-elise.mp3' else None
 
     def get_file(self) -> str | None:
         with self._lock:
@@ -94,6 +96,10 @@ class StreamState:
     def get_last_update(self) -> float:
         with self._lock:
             return self.last_update
+
+    def get_scheduled_start(self) -> float | None:
+        with self._lock:
+            return self.scheduled_start
 
 stream_state = StreamState()
 
@@ -173,7 +179,7 @@ class TTSWorker(threading.Thread):
             try:
                 out_file = asyncio.run(generate_tts(req.text, req.voice))
                 req.filename = os.path.basename(out_file)
-                stream_state.set_file(out_file)
+                stream_state.set_file(out_file)  # Will schedule start in 2s
             except Exception as e:
                 req.error = str(e)
             finally:
@@ -213,7 +219,7 @@ def play(file_name):
         abort(400, description="Invalid file path")
     if os.path.isfile(file_path) and safe_file.endswith('.mp3'):
         state.current_song = safe_file
-        stream_state.set_file(file_path)
+        stream_state.set_file(file_path)  # Will schedule start in 2s
         return jsonify({"message": f"Now playing: {state.current_song}"})
     abort(404, description="File not found")
 
@@ -294,6 +300,14 @@ def use_voice(name):
         return jsonify({'error': 'Voice not found'}), 404
     state.tts_voice = voice
     return jsonify({'status': 'ok', 'voice': state.tts_voice})
+
+@app.route('/current', methods=['GET'])
+def current():
+    return jsonify({
+        'file': stream_state.get_file(),
+        'scheduled_start': stream_state.get_scheduled_start(),
+        'last_update': stream_state.get_last_update()
+    })
 
 @app.route('/')
 def home():
