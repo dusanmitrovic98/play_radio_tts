@@ -221,9 +221,15 @@ def play(file_name):
 def stream():
     from flask import Response
     def generate():
+        # Always start with fur-elise.mp3 for each new client
+        played_intro = False
         last_file = None
         while True:
-            file_to_stream = stream_state.get_file() or SILENCE_FILE
+            if not played_intro:
+                file_to_stream = SILENCE_FILE  # This is fur-elise.mp3 per your config
+                played_intro = True
+            else:
+                file_to_stream = stream_state.get_file() or SILENCE_FILE
             if file_to_stream != last_file:
                 print(f"[Stream] Streaming: {file_to_stream}")
                 last_file = file_to_stream
@@ -244,14 +250,14 @@ def stream():
                             break
                         yield chunk
                         # If a new file is set, break and restart stream
-                        if stream_state.get_file() != file_to_stream:
+                        current_file = stream_state.get_file()
+                        if played_intro and current_file != file_to_stream:
                             print("[Stream] New file set, switching...")
                             process.kill()
                             break
                     background_file = "fur-elise.mp3"
-                    # After TTS file finishes, if it was not background, switch to background
-                    if file_to_stream != background_file and file_to_stream != SILENCE_FILE:
-                        # Set background as the current file for all clients
+                    # Only set background if the file was a TTS file and not already background or silence
+                    if played_intro and file_to_stream != background_file and file_to_stream != SILENCE_FILE and stream_state.get_file() == file_to_stream:
                         stream_state.set_file(background_file)
                 except GeneratorExit:
                     print("[Stream] Client disconnected.")
