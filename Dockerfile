@@ -20,7 +20,7 @@ RUN poetry config virtualenvs.create false && poetry install --no-dev
 COPY . .
 
 # Expose the port Render expects
-EXPOSE 5002
+EXPOSE 10000
 
 # Command to run your application
 CMD ["python", "main.py"]
