@@ -20,7 +20,7 @@ print("FFmpeg path:", ffmpeg_path)
 # --- Config ---
 load_dotenv()
 TTS_FOLDER = os.path.abspath('tts')
-SILENCE_FILE = os.path.abspath('silence.mp3')
+SILENCE_FILE = os.path.abspath('background.mp3')
 PORT = int(os.getenv('PORT', 5002))
 VOICES_FILE = os.path.join(os.path.dirname(__file__), 'voices.json')
 TTS_OUTPUT = os.path.join(TTS_FOLDER, 'tts-latest.mp3')
@@ -110,6 +110,7 @@ def say():
         out_file = asyncio.run(generate_tts(text, voice))
         global current_song
         current_song = os.path.basename(out_file)
+        stream_queue.add_file(out_file)  # Immediately queue the new TTS for streaming
         return jsonify({'status': 'ok', 'audio_path': current_song})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
