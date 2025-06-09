@@ -230,6 +230,12 @@ def stream():
         last_file = None
         while True:
             file_to_stream = stream_state.get_file() or SILENCE_FILE
+            scheduled_start = stream_state.get_scheduled_start()
+            # Wait for scheduled start if in the future
+            if scheduled_start and time.time() < scheduled_start:
+                wait_time = scheduled_start - time.time()
+                print(f"[Stream] Waiting {wait_time:.2f}s for scheduled start...")
+                time.sleep(max(0, wait_time))
             if file_to_stream != last_file:
                 print(f"[Stream] Streaming: {file_to_stream}")
                 last_file = file_to_stream
