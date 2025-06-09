@@ -12,6 +12,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from queue import Queue
+import imageio_ffmpeg as ffmpeg
+
+ffmpeg_path = ffmpeg.get_ffmpeg_exe()
+print("FFmpeg path:", ffmpeg_path)
 
 # --- Config ---
 load_dotenv()
