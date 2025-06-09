@@ -5,14 +5,14 @@ import subprocess
 import json
 import asyncio
 import edge_tts
-from flask import Flask, jsonify, request, send_from_directory, render_template
+from flask import Flask, jsonify, request, render_template
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from queue import Queue
 import imageio_ffmpeg as ffmpeg
+from pathlib import Path
 
 ffmpeg_path = ffmpeg.get_ffmpeg_exe()
 print("FFmpeg path:", ffmpeg_path)
@@ -20,12 +20,15 @@ print("FFmpeg path:", ffmpeg_path)
 # --- Config ---
 def get_config():
     load_dotenv()
+    base_dir = Path(__file__).parent.resolve()
+    tts_dir = base_dir / 'tts'
+    tts_dir.mkdir(exist_ok=True)  # Ensure tts directory exists once
     return {
-        'TTS_FOLDER': os.path.abspath('tts'),
-        'SILENCE_FILE': os.path.abspath('fur-elise.mp3'),
+        'TTS_FOLDER': str(tts_dir),
+        'SILENCE_FILE': str(base_dir / 'fur-elise.mp3'),
         'PORT': int(os.getenv('PORT', 5002)),
-        'VOICES_FILE': os.path.join(os.path.dirname(__file__), 'voices.json'),
-        'TTS_OUTPUT': os.path.join(os.path.abspath('tts'), 'tts-latest.mp3'),
+        'VOICES_FILE': str(base_dir / 'voices.json'),
+        'TTS_OUTPUT': str(tts_dir / 'tts-latest.mp3'),
         'DEFAULT_VOICE': "en-IN-PrabhatNeural"
     }
 
@@ -40,7 +43,12 @@ TTS_VOICE = config['DEFAULT_VOICE']
 app = Flask(__name__, static_folder='assets', template_folder='templates')
 
 # --- State ---
-current_song = None
+class AppState:
+    def __init__(self):
+        self.current_song = None
+        self.tts_voice = TTS_VOICE
+
+state = AppState()
 
 # --- Streaming Logic ---
 class StreamQueue:
@@ -48,19 +56,16 @@ class StreamQueue:
     def __init__(self):
         self.queue = Queue()
         self.current_file = None
-        self.lock = threading.Lock()
 
     def add_file(self, path):
-        with self.lock:
-            self.queue.queue.clear()
-            self.queue.put(path)
+        self.queue.queue.clear()  # Only one thread adds files, so mutex is not needed
+        self.queue.put(path)
 
     def get_next(self):
-        with self.lock:
-            if not self.queue.empty():
-                self.current_file = self.queue.get()
-                return self.current_file
-            return None
+        if not self.queue.empty():
+            self.current_file = self.queue.get()
+            return self.current_file
+        return None
 
     def has_next(self):
         return not self.queue.empty()
@@ -89,7 +94,7 @@ def run_watcher():
 # --- Utility Functions ---
 def load_voices():
     if not os.path.exists(VOICES_FILE):
-        return {"default": TTS_VOICE}
+        return {"default": state.tts_voice}
     with open(VOICES_FILE, 'r', encoding='utf-8') as f:
         return json.load(f)
 
@@ -99,34 +104,33 @@ def save_voices(voices):
 
 def get_voice(name):
     voices = load_voices()
-    return voices.get(name, voices.get('default', TTS_VOICE))
+    return voices.get(name, voices.get('default', state.tts_voice))
 
-def delete_old_tts_files():
-    for f in os.listdir(TTS_FOLDER):
-        if f.startswith('tts-') and f.endswith('.mp3'):
-            os.remove(os.path.join(TTS_FOLDER, f))
+def delete_old_tts_files(max_keep=5):
+    tts_files = sorted(Path(TTS_FOLDER).glob('tts-*.mp3'), key=lambda p: p.stat().st_mtime, reverse=True)
+    for f in tts_files[max_keep:]:
+        f.unlink(missing_ok=True)
 
 async def generate_tts(text, voice):
     delete_old_tts_files()
-    out_file = os.path.join(TTS_FOLDER, f"tts-{int(time.time())}.mp3")
+    out_file = Path(TTS_FOLDER) / f"tts-{int(time.time())}.mp3"
     communicate = edge_tts.Communicate(text, voice)
-    await communicate.save(out_file)
-    return out_file
+    await communicate.save(str(out_file))
+    return str(out_file)
 
 # --- Flask Endpoints ---
 @app.route('/say', methods=['POST'])
 def say():
     data = request.get_json()
     text = data.get('text')
-    voice = data.get('voice') or TTS_VOICE
+    voice = data.get('voice') or state.tts_voice
     if not text:
         return jsonify({'error': 'Missing text'}), 400
     try:
         out_file = asyncio.run(generate_tts(text, voice))
-        global current_song
-        current_song = os.path.basename(out_file)
+        state.current_song = os.path.basename(out_file)
         stream_queue.add_file(out_file)
-        return jsonify({'status': 'ok', 'audio_path': current_song})
+        return jsonify({'status': 'ok', 'audio_path': state.current_song})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -139,14 +143,13 @@ def list_songs():
 
 @app.route('/play/<file_name>', methods=['GET'])
 def play(file_name):
-    global current_song
     safe_file = secure_filename(file_name)
     file_path = os.path.join(TTS_FOLDER, safe_file)
     if os.path.isfile(file_path) and safe_file.endswith('.mp3'):
-        current_song = safe_file
+        state.current_song = safe_file
         stream_queue.add_file(file_path)
-        return jsonify({"message": f"Now playing: {current_song}"})
-    return jsonify({"error": "File not found"}), 404
+        return jsonify({"message": f"Now playing: {state.current_song}"})
+    abort(404, description="File not found")
 
 @app.route('/stream', methods=['GET'])
 def stream():
@@ -213,19 +216,17 @@ def add_voice():
 
 @app.route('/use/<name>', methods=['POST'])
 def use_voice(name):
-    global TTS_VOICE
     voice = get_voice(name)
     if not voice:
         return jsonify({'error': 'Voice not found'}), 404
-    TTS_VOICE = voice
-    return jsonify({'status': 'ok', 'voice': TTS_VOICE})
+    state.tts_voice = voice
+    return jsonify({'status': 'ok', 'voice': state.tts_voice})
 
 @app.route('/')
 def home():
     return render_template('index.html')
 
 if __name__ == "__main__":
-    os.makedirs(TTS_FOLDER, exist_ok=True)
     watcher_thread = threading.Thread(target=run_watcher, daemon=True)
     watcher_thread.start()
     app.run(host="0.0.0.0", port=PORT)
