@@ -4,6 +4,7 @@ import time
 import subprocess
 import json
 import asyncio
+from turtle import back
 import edge_tts
 from flask import Flask, jsonify, request, render_template, abort
 from werkzeug.utils import secure_filename
@@ -247,10 +248,11 @@ def stream():
                             print("[Stream] New file set, switching...")
                             process.kill()
                             break
+                    background_file = "fur-elise.mp3"
                     # After TTS file finishes, if it was not background, switch to background
-                    if file_to_stream != 'background.mp3' and file_to_stream != SILENCE_FILE:
+                    if file_to_stream != background_file and file_to_stream != SILENCE_FILE:
                         # Set background as the current file for all clients
-                        stream_state.set_file('background.mp3')
+                        stream_state.set_file(background_file)
                 except GeneratorExit:
                     print("[Stream] Client disconnected.")
                     process.kill()
