@@ -18,21 +18,33 @@ ffmpeg_path = ffmpeg.get_ffmpeg_exe()
 print("FFmpeg path:", ffmpeg_path)
 
 # --- Config ---
-load_dotenv()
-TTS_FOLDER = os.path.abspath('tts')
-SILENCE_FILE = os.path.abspath('fur-elise.mp3')
-PORT = int(os.getenv('PORT', 5002))
-VOICES_FILE = os.path.join(os.path.dirname(__file__), 'voices.json')
-TTS_OUTPUT = os.path.join(TTS_FOLDER, 'tts-latest.mp3')
+def get_config():
+    load_dotenv()
+    return {
+        'TTS_FOLDER': os.path.abspath('tts'),
+        'SILENCE_FILE': os.path.abspath('fur-elise.mp3'),
+        'PORT': int(os.getenv('PORT', 5002)),
+        'VOICES_FILE': os.path.join(os.path.dirname(__file__), 'voices.json'),
+        'TTS_OUTPUT': os.path.join(os.path.abspath('tts'), 'tts-latest.mp3'),
+        'DEFAULT_VOICE': "en-IN-PrabhatNeural"
+    }
+
+config = get_config()
+TTS_FOLDER = config['TTS_FOLDER']
+SILENCE_FILE = config['SILENCE_FILE']
+PORT = config['PORT']
+VOICES_FILE = config['VOICES_FILE']
+TTS_OUTPUT = config['TTS_OUTPUT']
+TTS_VOICE = config['DEFAULT_VOICE']
 
 app = Flask(__name__, static_folder='assets', template_folder='templates')
 
 # --- State ---
 current_song = None
-TTS_VOICE = "en-IN-PrabhatNeural"
 
 # --- Streaming Logic ---
 class StreamQueue:
+    """Thread-safe queue for streaming audio files."""
     def __init__(self):
         self.queue = Queue()
         self.current_file = None
@@ -56,6 +68,7 @@ class StreamQueue:
 stream_queue = StreamQueue()
 
 class TTSWatcher(FileSystemEventHandler):
+    """Watches the TTS folder for new mp3 files and queues them for streaming."""
     def on_created(self, event):
         if event.src_path.endswith(".mp3"):
             print(f"[Watcher] New file detected: {event.src_path}")
@@ -73,7 +86,7 @@ def run_watcher():
         observer.stop()
     observer.join()
 
-# --- Flask Endpoints ---
+# --- Utility Functions ---
 def load_voices():
     if not os.path.exists(VOICES_FILE):
         return {"default": TTS_VOICE}
@@ -88,17 +101,19 @@ def get_voice(name):
     voices = load_voices()
     return voices.get(name, voices.get('default', TTS_VOICE))
 
-async def generate_tts(text, voice):
-    # Delete old tts files so watchdog can pick up new one
+def delete_old_tts_files():
     for f in os.listdir(TTS_FOLDER):
         if f.startswith('tts-') and f.endswith('.mp3'):
             os.remove(os.path.join(TTS_FOLDER, f))
-    # Save new file with unique name
+
+async def generate_tts(text, voice):
+    delete_old_tts_files()
     out_file = os.path.join(TTS_FOLDER, f"tts-{int(time.time())}.mp3")
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(out_file)
     return out_file
 
+# --- Flask Endpoints ---
 @app.route('/say', methods=['POST'])
 def say():
     data = request.get_json()
@@ -110,7 +125,7 @@ def say():
         out_file = asyncio.run(generate_tts(text, voice))
         global current_song
         current_song = os.path.basename(out_file)
-        stream_queue.add_file(out_file)  # Immediately queue the new TTS for streaming
+        stream_queue.add_file(out_file)
         return jsonify({'status': 'ok', 'audio_path': current_song})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -126,10 +141,10 @@ def list_songs():
 def play(file_name):
     global current_song
     safe_file = secure_filename(file_name)
-    if safe_file in os.listdir(TTS_FOLDER) and safe_file.endswith('.mp3'):
+    file_path = os.path.join(TTS_FOLDER, safe_file)
+    if os.path.isfile(file_path) and safe_file.endswith('.mp3'):
         current_song = safe_file
-        # Add to stream queue so it plays next
-        stream_queue.add_file(os.path.join(TTS_FOLDER, safe_file))
+        stream_queue.add_file(file_path)
         return jsonify({"message": f"Now playing: {current_song}"})
     return jsonify({"error": "File not found"}), 404
 
@@ -142,7 +157,7 @@ def stream():
             if not file_to_stream:
                 file_to_stream = SILENCE_FILE
             print(f"[Stream] Streaming: {file_to_stream}")
-            process = subprocess.Popen(
+            with subprocess.Popen(
                 [
                     ffmpeg_path, '-hide_banner', '-loglevel', 'quiet',
                     '-re', '-i', file_to_stream,
@@ -151,25 +166,25 @@ def stream():
                     '-f', 'mp3', '-'
                 ],
                 stdout=subprocess.PIPE
-            )
-            try:
-                while True:
-                    chunk = process.stdout.read(4096)
-                    if not chunk:
-                        break
-                    yield chunk
-                    if stream_queue.has_next():
-                        print("[Stream] New file queued, switching...")
-                        process.kill()
-                        break
-            except GeneratorExit:
-                print("[Stream] Client disconnected.")
-                process.kill()
-                break
-            except Exception as e:
-                print(f"[Stream] Error: {e}")
-                process.kill()
-                break
+            ) as process:
+                try:
+                    while True:
+                        chunk = process.stdout.read(4096)
+                        if not chunk:
+                            break
+                        yield chunk
+                        if stream_queue.has_next():
+                            print("[Stream] New file queued, switching...")
+                            process.kill()
+                            break
+                except GeneratorExit:
+                    print("[Stream] Client disconnected.")
+                    process.kill()
+                    break
+                except Exception as e:
+                    print(f"[Stream] Error: {e}")
+                    process.kill()
+                    break
     headers = {
         "Content-Type": "audio/mpeg",
         "Cache-Control": "no-cache",
@@ -211,10 +226,6 @@ def home():
 
 if __name__ == "__main__":
     os.makedirs(TTS_FOLDER, exist_ok=True)
-
-    # Start the folder watcher
     watcher_thread = threading.Thread(target=run_watcher, daemon=True)
     watcher_thread.start()
-
-    # Start Flask app (single port)
     app.run(host="0.0.0.0", port=PORT)
