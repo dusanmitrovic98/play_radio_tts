@@ -250,7 +250,7 @@ class LiveStreamManager:
 
 # --- Initialize Live Stream Manager ---
 PLAYLIST_PATH = str(Path(TTS_FOLDER).parent / 'playlist.txt')
-STREAM_URL = 'http://0.0.0.0:8000/stream.mp3'
+STREAM_URL = 'http://0.0.0.0:5002/stream.mp3'
 BACKGROUND_FILE = str(Path('background.mp3').resolve())
 live_stream = LiveStreamManager(PLAYLIST_PATH, STREAM_URL, BACKGROUND_FILE)
 
