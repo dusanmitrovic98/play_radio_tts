@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.7] - 2025-06-09
+### Added
+- Seems like the most stable version yet.
+- removed loop.
+- starts with fur-elise.mp3
+
 ## [0.0.6] - 2025-06-09
 ### Changed
 - Updated `LiveStreamManager` to handle multiple TTS injections without restarting the stream.
