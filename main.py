@@ -134,17 +134,50 @@ def play(file_name):
 
 @app.route('/stream', methods=['GET'])
 def stream():
-    # Proxy to the internal streaming server
     from flask import Response
     def generate():
-        # Connect to the internal HTTP server
-        import requests
-        url = f"http://localhost:{PORT}/_internal_stream"
-        with requests.get(url, stream=True) as r:
-            for chunk in r.iter_content(chunk_size=4096):
-                if chunk:
+        while True:
+            file_to_stream = stream_queue.get_next()
+            if not file_to_stream:
+                file_to_stream = SILENCE_FILE
+            print(f"[Stream] Streaming: {file_to_stream}")
+            process = subprocess.Popen(
+                [
+                    ffmpeg_path, '-hide_banner', '-loglevel', 'quiet',
+                    '-re', '-i', file_to_stream,
+                    '-vn', '-acodec', 'libmp3lame',
+                    '-ar', '44100', '-ac', '2', '-b:a', '128k',
+                    '-f', 'mp3', '-'
+                ],
+                stdout=subprocess.PIPE
+            )
+            try:
+                while True:
+                    chunk = process.stdout.read(4096)
+                    if not chunk:
+                        break
                     yield chunk
-    return Response(generate(), mimetype='audio/mpeg')
+                    if stream_queue.has_next():
+                        print("[Stream] New file queued, switching...")
+                        process.kill()
+                        break
+            except GeneratorExit:
+                print("[Stream] Client disconnected.")
+                process.kill()
+                break
+            except Exception as e:
+                print(f"[Stream] Error: {e}")
+                process.kill()
+                break
+    headers = {
+        "Content-Type": "audio/mpeg",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "icy-name": "Python Radio",
+        "icy-metaint": "0",
+        "Connection": "close"
+    }
+    return Response(generate(), headers=headers)
 
 @app.route('/voices', methods=['GET'])
 def get_voices():
@@ -175,71 +208,6 @@ def use_voice(name):
 def home():
     return render_template('index.html')
 
-# --- Internal Streaming Server (for /stream endpoint) ---
-class StreamingHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path != "/_internal_stream":
-            self.send_response(404)
-            self.end_headers()
-            return
-
-        self.send_response(200)
-        self.send_header("Content-Type", "audio/mpeg")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("icy-name", "Python Radio")
-        self.send_header("icy-metaint", "0")
-        self.send_header("Connection", "close")
-        self.end_headers()
-
-        def generate_stream():
-            print("[Stream] Client connected.")
-            while True:
-                file_to_stream = stream_queue.get_next()
-                if not file_to_stream:
-                    file_to_stream = SILENCE_FILE
-
-                print(f"[Stream] Streaming: {file_to_stream}")
-                process = subprocess.Popen(
-                    [
-                        'ffmpeg', '-hide_banner', '-loglevel', 'quiet',
-                        '-re', '-i', file_to_stream,
-                        '-vn', '-acodec', 'libmp3lame',
-                        '-ar', '44100', '-ac', '2', '-b:a', '128k',
-                        '-f', 'mp3', '-'
-                    ],
-                    stdout=subprocess.PIPE
-                )
-
-                try:
-                    while True:
-                        chunk = process.stdout.read(4096)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
-
-                        if stream_queue.has_next():
-                            print("[Stream] New file queued, switching...")
-                            process.kill()
-                            break
-
-                except BrokenPipeError:
-                    print("[Stream] Client disconnected.")
-                    process.kill()
-                    break
-                except Exception as e:
-                    print(f"[Stream] Error: {e}")
-                    process.kill()
-                    break
-
-        generate_stream()
-
-def run_server():
-    server = HTTPServer(("localhost", PORT), StreamingHandler)
-    print(f"[Server] Internal streaming on http://localhost:{PORT}/_internal_stream")
-    server.serve_forever()
-
 if __name__ == "__main__":
     os.makedirs(TTS_FOLDER, exist_ok=True)
 
@@ -247,9 +215,5 @@ if __name__ == "__main__":
     watcher_thread = threading.Thread(target=run_watcher, daemon=True)
     watcher_thread.start()
 
-    # Start the internal streaming server
-    server_thread = threading.Thread(target=run_server, daemon=True)
-    server_thread.start()
-
-    # Start Flask app
+    # Start Flask app (single port)
     app.run(host="0.0.0.0", port=PORT)
