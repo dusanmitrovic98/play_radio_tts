@@ -198,13 +198,21 @@ BACKGROUND_FILE = str(Path('background.mp3').resolve())
 @app.route('/stream', methods=['GET'])
 def stream():
     def generate():
+        last_tts_file = None
+        tts_played = False
         while True:
-            # Always play the current TTS if available, else background
-            tts_file = None
+            # Find the latest TTS file
             tts_files = sorted(Path(TTS_FOLDER).glob('tts-*.mp3'), key=lambda p: p.stat().st_mtime, reverse=True)
-            if tts_files:
-                tts_file = str(tts_files[0])
-            file_to_stream = tts_file if tts_file else BACKGROUND_FILE
+            tts_file = str(tts_files[0]) if tts_files else None
+            # If a new TTS file is detected, play it once for everyone
+            if tts_file and tts_file != last_tts_file:
+                file_to_stream = tts_file
+                last_tts_file = tts_file
+                tts_played = False
+            elif not tts_file or tts_played:
+                file_to_stream = SILENCE_FILE  # Loop fur-elise.mp3
+            else:
+                file_to_stream = tts_file
             print(f"[Stream] Streaming: {file_to_stream}")
             with subprocess.Popen([
                 ffmpeg_path, '-hide_banner', '-loglevel', 'quiet',
@@ -219,12 +227,9 @@ def stream():
                         if not chunk:
                             break
                         yield chunk
-                        # If a new TTS file appears, break and restart
-                        new_tts_files = sorted(Path(TTS_FOLDER).glob('tts-*.mp3'), key=lambda p: p.stat().st_mtime, reverse=True)
-                        if new_tts_files and str(new_tts_files[0]) != file_to_stream:
-                            print("[Stream] New TTS detected, switching...")
-                            process.kill()
-                            break
+                    # After TTS finishes, mark as played
+                    if file_to_stream == tts_file:
+                        tts_played = True
                 except GeneratorExit:
                     print("[Stream] Client disconnected.")
                     process.kill()
