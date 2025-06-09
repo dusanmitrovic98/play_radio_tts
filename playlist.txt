@@ -1,0 +1,3 @@
+# This playlist will be used by ffmpeg to stream TTS then background music
+file 'tts/tts-1749480018.mp3'
+file 'background.mp3'

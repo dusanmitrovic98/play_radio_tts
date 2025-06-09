@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.5] - 2025-06-09
+### Changed
+- Switched to a true live radio stream using FFmpeg HTTP output, managed directly from `main.py`.
+- Added `LiveStreamManager` class to control FFmpeg and playlist for seamless TTS injection.
+- When a new TTS is generated, it is injected into the live stream and played for all listeners in sync.
+- `/current` and `/stream` endpoints now return the live stream URL and current TTS info.
+- All clients (browser, Highrise, etc.) now hear the same audio at the same time, just like a real radio broadcast.
+- Deprecated the old per-client `/stream` logic in favor of the live stream approach.
+
 ## [0.0.4] - 2025-06-09
 ### Fixed
 - TTS is now broadcast to all clients only once per trigger.
